@@ -27,6 +27,18 @@ require_once(plugin_dir_path(__FILE__) . 'diyseo-settings.php');
 
 // Define a global variable to store the license key
 $GLOBALS['diyseo_license_key'] = '';
+
+function diyseo_has_override_data($post_id) {
+    if (empty($post_id)) {
+        return false;
+    }
+
+    $meta_title = get_post_meta($post_id, '_diyseo_meta_title', true);
+    $meta_description = get_post_meta($post_id, '_diyseo_meta_description', true);
+
+    return (!empty($meta_title) || !empty($meta_description));
+}
+
 function diyseo_track_article_generation() {
     $generation_count = get_option('diyseo_free_generations', 0);
     update_option('diyseo_free_generations', $generation_count + 1);
@@ -47,6 +59,10 @@ function diyseo_cleanup_head() {
 }
 add_action('init', 'diyseo_cleanup_head');
 function diyseo_clean_page_output() {
+    if (!diyseo_has_override_data(get_the_ID())) {
+        return;
+    }
+
     if (is_page()) {
         global $wp_filter;
         
@@ -92,10 +108,11 @@ add_action('template_redirect', 'diyseo_clean_page_output', 0);
 function diyseo_ensure_meta_tags() {
     // Remove only specific actions that might interfere with our meta tags
     remove_all_actions('wp_head', 1);  // Remove early actions
-    
-    // Add our meta tags back
+
+    // Ensure our DIYSEO actions are restored after cleanup
     add_action('wp_head', 'diyseo_output_meta_tags', 1);
-    
+    add_action('wp_head', 'diyseo_add_meta_tags', 1);
+
     // Add back essential WordPress head elements
     add_action('wp_head', 'wp_enqueue_scripts', 2);
     add_action('wp_head', 'wp_print_styles', 8);
@@ -123,6 +140,10 @@ function diyseo_get_command_center_context() {
 }
 
 function diyseo_clean_header_output() {
+    if (!diyseo_has_override_data(get_the_ID())) {
+        return;
+    }
+
     // Changed to check for ALL single content types
     if (defined('WPSEO_VERSION') && is_singular()) {
         add_action('wp_head', function() {
@@ -162,9 +183,12 @@ function diyseo_clean_header_output() {
 add_action('template_redirect', 'diyseo_clean_header_output', 0);
 function diyseo_add_meta_tags() {
     if (is_single() || is_page()) {
-        // Add our meta tags with very high priority to ensure they're added after cleanup
-        add_action('wp_head', 'diyseo_output_meta_tags', 1);
-        
+        $post_id = get_the_ID();
+
+        if (!diyseo_has_override_data($post_id)) {
+            return;
+        }
+
         // Remove conflicting title actions
         remove_action('wp_head', '_wp_render_title_tag', 1);
         add_filter('pre_get_document_title', '__return_empty_string', 999);
@@ -174,6 +198,11 @@ function diyseo_add_meta_tags() {
 
 function diyseo_output_meta_tags() {
     $post_id = get_the_ID();
+
+    if (!diyseo_has_override_data($post_id)) {
+        return;
+    }
+
     $meta_title = get_post_meta($post_id, '_diyseo_meta_title', true);
     $meta_description = get_post_meta($post_id, '_diyseo_meta_description', true);
     
@@ -206,6 +235,7 @@ function diyseo_output_meta_tags() {
 }
 
 // Hook into WordPress head
+add_action('wp_head', 'diyseo_output_meta_tags', 1);
 add_action('wp_head', 'diyseo_add_meta_tags', 1);
 function diyseo_get_remaining_generations() {
     $has_license = diyseo_get_license_key();
@@ -1416,34 +1446,33 @@ add_action('add_meta_boxes', 'diyseo_add_featured_image_meta_box');
 // Add this function to enforce meta box order
 function diyseo_force_meta_box_order() {
     global $wp_meta_boxes;
-    
-    if (!isset($wp_meta_boxes['post'])) {
-        return;
-    }
 
-    // Get existing meta boxes
-    $high = isset($wp_meta_boxes['post']['normal']['high']) ? $wp_meta_boxes['post']['normal']['high'] : array();
-    $default = isset($wp_meta_boxes['post']['normal']['default']) ? $wp_meta_boxes['post']['normal']['default'] : array();
+    $post_types = array('post', 'page');
 
-    // Set desired order with FAQ box after meta title and description
-    $order = array(
-        'diyseo_calendar_meta_box' => $high['diyseo_calendar_meta_box'] ?? null,
-        'diyseo_meta_title_box' => $default['diyseo_meta_title_box'] ?? null,
-        'diyseo_meta_description_box' => $default['diyseo_meta_description_box'] ?? null,
-        'diyseo_faq_box' => $default['diyseo_faq_box'] ?? null
-    );
+    foreach ($post_types as $post_type) {
+        if (!isset($wp_meta_boxes[$post_type]['normal']['high'])) {
+            continue;
+        }
 
-    // Filter out null values
-    $order = array_filter($order);
+        $high_priority_boxes = $wp_meta_boxes[$post_type]['normal']['high'];
 
-    // Replace the existing meta boxes with ordered ones
-    $wp_meta_boxes['post']['normal']['high'] = array_intersect_key($order, $high);
-    $wp_meta_boxes['post']['normal']['default'] = array_intersect_key($order, $default);
+        $diyseo_keys = array(
+            'diyseo_calendar_meta_box',
+            'diyseo_meta_title_box',
+            'diyseo_meta_description_box',
+            'diyseo_faq_box'
+        );
 
-    // Also apply the same order to the 'page' post type
-    if (isset($wp_meta_boxes['page'])) {
-        $wp_meta_boxes['page']['normal']['high'] = array_intersect_key($order, $high);
-        $wp_meta_boxes['page']['normal']['default'] = array_intersect_key($order, $default);
+        $diyseo_boxes = array();
+
+        foreach ($diyseo_keys as $key) {
+            if (isset($high_priority_boxes[$key])) {
+                $diyseo_boxes[$key] = $high_priority_boxes[$key];
+                unset($high_priority_boxes[$key]);
+            }
+        }
+
+        $wp_meta_boxes[$post_type]['normal']['high'] = $diyseo_boxes + $high_priority_boxes;
     }
 }
 
@@ -2561,6 +2590,10 @@ add_filter('plugin_action_links_' . plugin_basename(__FILE__), 'diyseo_add_setti
 
 // Add a function to remove Yoast meta tags from the head
 function diyseo_remove_yoast_meta() {
+    if (!diyseo_has_override_data(get_the_ID())) {
+        return;
+    }
+
     // Check if we're on a single post or page AND Yoast is active
     if (defined('WPSEO_VERSION') && (is_single() || is_page())) {
         // Remove all Yoast head actions
