@@ -27,61 +27,88 @@ require_once(plugin_dir_path(__FILE__) . 'diyseo-settings.php');
 
 // Define a global variable to store the license key
 $GLOBALS['diyseo_license_key'] = '';
+
+function diyseo_post_has_seo_data($post_id = null) {
+    if (!is_singular()) {
+        return false;
+    }
+
+    if (!$post_id) {
+        $post_id = get_queried_object_id();
+    }
+
+    if (!$post_id) {
+        $post_id = get_the_ID();
+    }
+
+    if (!$post_id) {
+        return false;
+    }
+
+    $meta_title = trim((string) get_post_meta($post_id, '_diyseo_meta_title', true));
+    $meta_description = trim((string) get_post_meta($post_id, '_diyseo_meta_description', true));
+
+    return ($meta_title !== '' || $meta_description !== '');
+}
 function diyseo_track_article_generation() {
     $generation_count = get_option('diyseo_free_generations', 0);
     update_option('diyseo_free_generations', $generation_count + 1);
     return $generation_count + 1;
 }
 function diyseo_cleanup_head() {
-    if (is_single() || is_page()) {
-        // Remove default WordPress meta tags
-        remove_action('wp_head', 'rel_canonical');
-        remove_action('wp_head', 'wp_generator');
-        remove_action('wp_head', 'wlwmanifest_link');
-        remove_action('wp_head', 'rsd_link');
-        remove_action('wp_head', 'yoast-seo-meta-tag');
-        // Remove feed links if not needed
-        remove_action('wp_head', 'feed_links', 2);
-        remove_action('wp_head', 'feed_links_extra', 3);
+    if (!diyseo_post_has_seo_data()) {
+        return;
     }
+
+    // Remove default WordPress meta tags
+    remove_action('wp_head', 'rel_canonical');
+    remove_action('wp_head', 'wp_generator');
+    remove_action('wp_head', 'wlwmanifest_link');
+    remove_action('wp_head', 'rsd_link');
+    remove_action('wp_head', 'yoast-seo-meta-tag');
+    // Remove feed links if not needed
+    remove_action('wp_head', 'feed_links', 2);
+    remove_action('wp_head', 'feed_links_extra', 3);
 }
 add_action('init', 'diyseo_cleanup_head');
 function diyseo_clean_page_output() {
-    if (is_page()) {
-        global $wp_filter;
-        
-        // Remove all filters that might add meta tags
-        $meta_filters = array(
-            'wp_head',
-            'get_wp_title_rss',
-            'wp_title',
-            'pre_get_document_title',
-            'document_title_parts'
-        );
-        
-        foreach ($meta_filters as $filter) {
-            if (isset($wp_filter[$filter])) {
-                foreach ($wp_filter[$filter] as $priority => $callbacks) {
-                    foreach ($callbacks as $callback_data) {
-                        // Check if the callback contains 'yoast' or 'wpseo' without serializing
-                        $callback_string = '';
-                        if (is_string($callback_data['function'])) {
-                            $callback_string = $callback_data['function'];
-                        } elseif (is_array($callback_data['function'])) {
-                            if (is_object($callback_data['function'][0])) {
-                                $callback_string = get_class($callback_data['function'][0]);
-                            } elseif (is_string($callback_data['function'][0])) {
-                                $callback_string = $callback_data['function'][0];
-                            }
-                            if (isset($callback_data['function'][1])) {
-                                $callback_string .= '::' . $callback_data['function'][1];
-                            }
+    if (!is_page() || !diyseo_post_has_seo_data()) {
+        return;
+    }
+
+    global $wp_filter;
+
+    // Remove all filters that might add meta tags
+    $meta_filters = array(
+        'wp_head',
+        'get_wp_title_rss',
+        'wp_title',
+        'pre_get_document_title',
+        'document_title_parts'
+    );
+
+    foreach ($meta_filters as $filter) {
+        if (isset($wp_filter[$filter])) {
+            foreach ($wp_filter[$filter] as $priority => $callbacks) {
+                foreach ($callbacks as $callback_data) {
+                    // Check if the callback contains 'yoast' or 'wpseo' without serializing
+                    $callback_string = '';
+                    if (is_string($callback_data['function'])) {
+                        $callback_string = $callback_data['function'];
+                    } elseif (is_array($callback_data['function'])) {
+                        if (is_object($callback_data['function'][0])) {
+                            $callback_string = get_class($callback_data['function'][0]);
+                        } elseif (is_string($callback_data['function'][0])) {
+                            $callback_string = $callback_data['function'][0];
                         }
-                        
-                        if (stripos($callback_string, 'yoast') !== false || 
-                            stripos($callback_string, 'wpseo') !== false) {
-                            remove_filter($filter, $callback_data['function'], $priority);
+                        if (isset($callback_data['function'][1])) {
+                            $callback_string .= '::' . $callback_data['function'][1];
                         }
+                    }
+
+                    if (stripos($callback_string, 'yoast') !== false ||
+                        stripos($callback_string, 'wpseo') !== false) {
+                        remove_filter($filter, $callback_data['function'], $priority);
                     }
                 }
             }
@@ -90,12 +117,16 @@ function diyseo_clean_page_output() {
 }
 add_action('template_redirect', 'diyseo_clean_page_output', 0);
 function diyseo_ensure_meta_tags() {
+    if (!diyseo_post_has_seo_data()) {
+        return;
+    }
+
     // Remove only specific actions that might interfere with our meta tags
     remove_all_actions('wp_head', 1);  // Remove early actions
-    
+
     // Add our meta tags back
     add_action('wp_head', 'diyseo_output_meta_tags', 1);
-    
+
     // Add back essential WordPress head elements
     add_action('wp_head', 'wp_enqueue_scripts', 2);
     add_action('wp_head', 'wp_print_styles', 8);
@@ -124,52 +155,56 @@ function diyseo_get_command_center_context() {
 
 function diyseo_clean_header_output() {
     // Changed to check for ALL single content types
-    if (defined('WPSEO_VERSION') && is_singular()) {
-        add_action('wp_head', function() {
-            ob_start(function($output) {
-                // Remove any Yoast meta tags
-                $output = preg_replace('/<meta[^>]*(yoast-seo-meta-tag|wpseo)[^>]*>/', '', $output);
-                
-                // Remove duplicate title tags (keep only the first one)
-                $pattern = "/<title>(.*?)<\/title>/i";
-                preg_match_all($pattern, $output, $matches);
-                if (count($matches[0]) > 1) {
-                    $output = preg_replace($pattern, '', $output, count($matches[0]) - 1);
-                }
-                
-                return $output;
-            });
-        }, 0);
-        
-        add_action('wp_head', function() {
-            ob_end_flush();
-        }, 999);
-
-        // Remove Yoast's actions explicitly
-        remove_action('wp_head', array(YoastSEO()->meta, 'meta_description'), 6);
-        remove_action('wp_head', array(YoastSEO()->meta, 'print_title'), 1);
-        remove_action('wp_head', array(YoastSEO()->meta, 'metadesc'), 6);
-        remove_action('wp_head', array(YoastSEO()->meta, 'print_head'), 9);
-        
-        // Remove Yoast's JSON-LD
-        add_filter('wpseo_json_ld_output', '__return_false');
-        
-        // Remove Yoast's OpenGraph
-        remove_action('wpseo_opengraph', array(YoastSEO()->meta, 'opengraph_title'), 10);
-        remove_action('wpseo_opengraph', array(YoastSEO()->meta, 'opengraph_description'), 10);
+    if (!defined('WPSEO_VERSION') || !is_singular() || !diyseo_post_has_seo_data()) {
+        return;
     }
+
+    add_action('wp_head', function() {
+        ob_start(function($output) {
+            // Remove any Yoast meta tags
+            $output = preg_replace('/<meta[^>]*(yoast-seo-meta-tag|wpseo)[^>]*>/', '', $output);
+
+            // Remove duplicate title tags (keep only the first one)
+            $pattern = "/<title>(.*?)<\/title>/i";
+            preg_match_all($pattern, $output, $matches);
+            if (count($matches[0]) > 1) {
+                $output = preg_replace($pattern, '', $output, count($matches[0]) - 1);
+            }
+
+            return $output;
+        });
+    }, 0);
+
+    add_action('wp_head', function() {
+        ob_end_flush();
+    }, 999);
+
+    // Remove Yoast's actions explicitly
+    remove_action('wp_head', array(YoastSEO()->meta, 'meta_description'), 6);
+    remove_action('wp_head', array(YoastSEO()->meta, 'print_title'), 1);
+    remove_action('wp_head', array(YoastSEO()->meta, 'metadesc'), 6);
+    remove_action('wp_head', array(YoastSEO()->meta, 'print_head'), 9);
+
+    // Remove Yoast's JSON-LD
+    add_filter('wpseo_json_ld_output', '__return_false');
+
+    // Remove Yoast's OpenGraph
+    remove_action('wpseo_opengraph', array(YoastSEO()->meta, 'opengraph_title'), 10);
+    remove_action('wpseo_opengraph', array(YoastSEO()->meta, 'opengraph_description'), 10);
 }
 add_action('template_redirect', 'diyseo_clean_header_output', 0);
 function diyseo_add_meta_tags() {
-    if (is_single() || is_page()) {
-        // Add our meta tags with very high priority to ensure they're added after cleanup
-        add_action('wp_head', 'diyseo_output_meta_tags', 1);
-        
-        // Remove conflicting title actions
-        remove_action('wp_head', '_wp_render_title_tag', 1);
-        add_filter('pre_get_document_title', '__return_empty_string', 999);
-        add_filter('wp_title', '__return_empty_string', 999);
+    if (!diyseo_post_has_seo_data()) {
+        return;
     }
+
+    // Add our meta tags with very high priority to ensure they're added after cleanup
+    add_action('wp_head', 'diyseo_output_meta_tags', 1);
+
+    // Remove conflicting title actions
+    remove_action('wp_head', '_wp_render_title_tag', 1);
+    add_filter('pre_get_document_title', '__return_empty_string', 999);
+    add_filter('wp_title', '__return_empty_string', 999);
 }
 
 function diyseo_output_meta_tags() {
@@ -1416,34 +1451,37 @@ add_action('add_meta_boxes', 'diyseo_add_featured_image_meta_box');
 // Add this function to enforce meta box order
 function diyseo_force_meta_box_order() {
     global $wp_meta_boxes;
-    
-    if (!isset($wp_meta_boxes['post'])) {
-        return;
-    }
 
-    // Get existing meta boxes
-    $high = isset($wp_meta_boxes['post']['normal']['high']) ? $wp_meta_boxes['post']['normal']['high'] : array();
-    $default = isset($wp_meta_boxes['post']['normal']['default']) ? $wp_meta_boxes['post']['normal']['default'] : array();
-
-    // Set desired order with FAQ box after meta title and description
-    $order = array(
-        'diyseo_calendar_meta_box' => $high['diyseo_calendar_meta_box'] ?? null,
-        'diyseo_meta_title_box' => $default['diyseo_meta_title_box'] ?? null,
-        'diyseo_meta_description_box' => $default['diyseo_meta_description_box'] ?? null,
-        'diyseo_faq_box' => $default['diyseo_faq_box'] ?? null
+    $targets = array(
+        'diyseo_calendar_meta_box',
+        'diyseo_meta_title_box',
+        'diyseo_meta_description_box',
+        'diyseo_faq_box'
     );
 
-    // Filter out null values
-    $order = array_filter($order);
+    foreach (array('post', 'page') as $post_type) {
+        if (!isset($wp_meta_boxes[$post_type]['normal'])) {
+            continue;
+        }
 
-    // Replace the existing meta boxes with ordered ones
-    $wp_meta_boxes['post']['normal']['high'] = array_intersect_key($order, $high);
-    $wp_meta_boxes['post']['normal']['default'] = array_intersect_key($order, $default);
+        foreach (array('high', 'default') as $priority) {
+            if (!isset($wp_meta_boxes[$post_type]['normal'][$priority])) {
+                continue;
+            }
 
-    // Also apply the same order to the 'page' post type
-    if (isset($wp_meta_boxes['page'])) {
-        $wp_meta_boxes['page']['normal']['high'] = array_intersect_key($order, $high);
-        $wp_meta_boxes['page']['normal']['default'] = array_intersect_key($order, $default);
+            $existing_boxes = $wp_meta_boxes[$post_type]['normal'][$priority];
+            $ordered_boxes = array();
+
+            foreach ($targets as $box_id) {
+                if (isset($existing_boxes[$box_id])) {
+                    $ordered_boxes[$box_id] = $existing_boxes[$box_id];
+                    unset($existing_boxes[$box_id]);
+                }
+            }
+
+            // Merge our prioritized boxes with the remaining boxes to preserve everything else
+            $wp_meta_boxes[$post_type]['normal'][$priority] = $ordered_boxes + $existing_boxes;
+        }
     }
 }
 
@@ -2562,42 +2600,44 @@ add_filter('plugin_action_links_' . plugin_basename(__FILE__), 'diyseo_add_setti
 // Add a function to remove Yoast meta tags from the head
 function diyseo_remove_yoast_meta() {
     // Check if we're on a single post or page AND Yoast is active
-    if (defined('WPSEO_VERSION') && (is_single() || is_page())) {
-        // Remove all Yoast head actions
-        if (class_exists('WPSEO_Frontend')) {
-            $wpseo_frontend = WPSEO_Frontend::get_instance();
-            remove_action('wpseo_head', array($wpseo_frontend, 'head'), 1);
-        }
-
-        // Remove all Yoast meta tag related actions
-        if (class_exists('WPSEO_Meta')) {
-            remove_all_filters('wpseo_title');
-            remove_all_filters('wpseo_metadesc');
-            remove_all_filters('wpseo_robots');
-            remove_all_filters('wpseo_canonical');
-            remove_all_filters('wpseo_opengraph_title');
-            remove_all_filters('wpseo_opengraph_description');
-            remove_all_filters('wpseo_twitter_title');
-            remove_all_filters('wpseo_twitter_description');
-        }
-
-        // Remove schema
-        add_filter('wpseo_json_ld_output', '__return_false', 99);
-        
-        // Remove specific meta tags
-        remove_all_actions('wpseo_opengraph');
-        remove_all_actions('wpseo_twitter');
-        
-        // Remove Yoast SEO classes from links
-        add_filter('wpseo_link_rel_canonical', '__return_false');
-        add_filter('wpseo_canonical', '__return_false');
+    if (!defined('WPSEO_VERSION') || !diyseo_post_has_seo_data()) {
+        return;
     }
+
+    // Remove all Yoast head actions
+    if (class_exists('WPSEO_Frontend')) {
+        $wpseo_frontend = WPSEO_Frontend::get_instance();
+        remove_action('wpseo_head', array($wpseo_frontend, 'head'), 1);
+    }
+
+    // Remove all Yoast meta tag related actions
+    if (class_exists('WPSEO_Meta')) {
+        remove_all_filters('wpseo_title');
+        remove_all_filters('wpseo_metadesc');
+        remove_all_filters('wpseo_robots');
+        remove_all_filters('wpseo_canonical');
+        remove_all_filters('wpseo_opengraph_title');
+        remove_all_filters('wpseo_opengraph_description');
+        remove_all_filters('wpseo_twitter_title');
+        remove_all_filters('wpseo_twitter_description');
+    }
+
+    // Remove schema
+    add_filter('wpseo_json_ld_output', '__return_false', 99);
+
+    // Remove specific meta tags
+    remove_all_actions('wpseo_opengraph');
+    remove_all_actions('wpseo_twitter');
+
+    // Remove Yoast SEO classes from links
+    add_filter('wpseo_link_rel_canonical', '__return_false');
+    add_filter('wpseo_canonical', '__return_false');
 }
 add_action('template_redirect', 'diyseo_remove_yoast_meta', 999);
 
 // Add a function to remove Yoast's JSON-LD schema
 function diyseo_remove_yoast_schema() {
-    if (defined('WPSEO_VERSION') && is_single()) {
+    if (defined('WPSEO_VERSION') && diyseo_post_has_seo_data()) {
         add_filter('wpseo_json_ld_output', '__return_false');
     }
 }
